@@ -21,44 +21,89 @@ jobs:
 
       - name: Find project directory
         run: |
-          echo "Searching for package.json..."
-          find project -name package.json -not -path '*/node_modules/*'
+          PROJECT_DIR=$(dirname "$(find project -name package.json -not -path '*/node_modules/*' | head -1)")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Install dependencies and build
-        run: |
-          PROJECT_DIR=$(dirname "$(find project -name package.json -not -path '*/node_modules/*' | head -1)")
-          echo "Project directory: $PROJECT_DIR"
-          cd "$PROJECT_DIR"
-          npm install
-          npm run build
+      - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
 
-      - name: Sync Capacitor Android
+      - name: Build web app
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run build
+
+      - name: Sync Capacitor
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npx cap sync android
+
+      - name: Upgrade Android build configuration
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          PROJECT_DIR=$(dirname "$(find project -name package.json -not -path '*/node_modules/*' | head -1)")
-          cd "$PROJECT_DIR"
-          npx cap sync android
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("android")
+
+          # Update Android Gradle Plugin
+          for p in [
+              root / "build.gradle",
+              root / "build.gradle.kts",
+              root / "settings.gradle",
+              root / "settings.gradle.kts",
+          ]:
+              if p.exists():
+                  s = p.read_text()
+                  s = s.replace(
+                      "com.android.tools.build:gradle:8.2.2",
+                      "com.android.tools.build:gradle:8.9.2"
+                  )
+                  s = s.replace(
+                      "com.android.application version '8.2.2'",
+                      "com.android.application version '8.9.2'"
+                  )
+                  s = s.replace(
+                      'com.android.application version "8.2.2"',
+                      'com.android.application version "8.9.2"'
+                  )
+                  p.write_text(s)
+
+          # Update compileSdk
+          for p in root.rglob("*.gradle"):
+              s = p.read_text()
+              s = s.replace("compileSdk = 35", "compileSdk = 36")
+              s = s.replace("compileSdk 35", "compileSdk 36")
+              p.write_text(s)
+
+          for p in root.rglob("*.gradle.kts"):
+              s = p.read_text()
+              s = s.replace("compileSdk = 35", "compileSdk = 36")
+              p.write_text(s)
+
+          # Suppress obsolete warning if applicable
+          gradle_properties = root / "gradle.properties"
+          with gradle_properties.open("a") as f:
+              f.write("\nandroid.suppressUnsupportedCompileSdk=36\n")
+          PY
 
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 17
 
       - name: Make Gradle executable
-        run: |
-          PROJECT_DIR=$(dirname "$(find project -name package.json -not -path '*/node_modules/*' | head -1)")
-          chmod +x "$PROJECT_DIR/android/gradlew"
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        run: chmod +x gradlew
 
       - name: Build Release APK
-        run: |
-          PROJECT_DIR=$(dirname "$(find project -name package.json -not -path '*/node_modules/*' | head -1)")
-          cd "$PROJECT_DIR/android"
-          ./gradlew assembleRelease
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        run: ./gradlew assembleRelease --stacktrace
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
